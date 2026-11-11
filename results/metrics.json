@@ -1,0 +1,70 @@
+{
+  "results": [
+    {
+      "model": "Rule baseline (DIP features)",
+      "accuracy": 0.913,
+      "macro_f1": 0.9145,
+      "per_class_f1": {
+        "clean": 0.92,
+        "blur": 0.953,
+        "noise": 1.0,
+        "low_contrast": 0.831,
+        "bg_clutter": 0.966,
+        "off_center": 0.817
+      },
+      "defect_recall": 0.9911,
+      "false_reject_rate": 0.1111
+    },
+    {
+      "model": "Random Forest (DIP features)",
+      "accuracy": 0.9833,
+      "macro_f1": 0.9833,
+      "per_class_f1": {
+        "clean": 0.967,
+        "blur": 0.989,
+        "noise": 1.0,
+        "low_contrast": 0.96,
+        "bg_clutter": 0.994,
+        "off_center": 0.989
+      },
+      "defect_recall": 0.9933,
+      "false_reject_rate": 0.0333
+    },
+    {
+      "model": "Small CNN (raw pixels)",
+      "accuracy": 0.9259,
+      "macro_f1": 0.921,
+      "per_class_f1": {
+        "clean": 0.892,
+        "blur": 0.972,
+        "noise": 0.767,
+        "low_contrast": 0.968,
+        "bg_clutter": 0.932,
+        "off_center": 0.994
+      },
+      "defect_recall": 0.96,
+      "false_reject_rate": 0.0333
+    }
+  ],
+  "meta": {
+    "n_train": 1260,
+    "n_test": 540,
+    "feature_ms_per_img": 2.27,
+    "rf_train_s": 0.52,
+    "cnn_train_s": 65.5,
+    "cnn_epochs": 20,
+    "cnn_train_acc": 0.946,
+    "rf_importance": {
+      "sharpness": 0.3062,
+      "border_white": 0.1929,
+      "centroid_off": 0.0959,
+      "hist_spread": 0.0815,
+      "noise_mad": 0.0685,
+      "sp_frac": 0.0635,
+      "bbox_area": 0.0602,
+      "bg_std": 0.0517,
+      "fg_fill": 0.0412,
+      "contrast_std": 0.0385
+    }
+  }
+}

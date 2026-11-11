@@ -1,0 +1,202 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{graphicx,booktabs,amsmath,url,cite}
+\usepackage[hidelinks]{hyperref}
+\graphicspath{{../results/}}
+\IEEEoverridecommandlockouts
+
+\begin{document}
+\title{Automated E-commerce Product Image Quality and Compliance Inspection Using Classical Image-Processing Features}
+
+\author{\IEEEauthorblockN{Vedant Kenkre, Raunak khandelwal}
+\IEEEauthorblockA{Roll No.\ 23CD3050 , 23CD3033\\ Department of Computer Science and Design Engineering \\ Rajiv Gandhi Institute of Petroleum Technology, Amethi \\ 23cd3050@rgipt.ac.in, 23cd3033@rgipt.ac.in}}
+\maketitle
+
+\begin{abstract}
+Online marketplaces reject a large fraction of seller-uploaded product photographs because they are blurred, noisy, washed out, shot on a cluttered background, or badly framed. We build a lightweight inspector that flags such images and names the defect. From each image we compute ten interpretable digital-image-processing (DIP) measures---variance of the Laplacian, a median-residual noise estimate, histogram spread, border whiteness, background uniformity after Otsu segmentation with morphological clean-up, and bounding-box/centroid statistics of the largest connected component. A hand-tuned rule baseline on these measures reaches 91.3\,\% accuracy (macro-F1 0.915) on a held-out, product-disjoint test set of 540 images. Replacing the rules by a Random Forest trained on the same ten features raises this to 98.3\,\% (macro-F1 0.983), outperforming a small convolutional network trained end-to-end on raw pixels (92.6\,\%, macro-F1 0.921) while needing only 2.4\,ms of feature extraction per image on a CPU. A feature-group ablation shows that region features from the segmentation stage are what separate off-centre and cluttered-background images. The dataset is derived from 300 real studio product photographs with five synthetically injected, fully labelled defect types. Code, data generator and all figures are released.
+\end{abstract}
+
+\begin{IEEEkeywords}
+image quality assessment, Laplacian variance, Otsu thresholding, morphology, connected components, random forest, e-commerce
+\end{IEEEkeywords}
+
+\section{Introduction}
+Marketplaces such as Amazon, Flipkart and Myntra impose listing rules on product photographs: the item must be sharp, well exposed, centred, occupy most of the frame, and sit on a pure white background. Sellers upload millions of images a day, and manual review does not scale. An automatic inspector that \emph{rejects early and explains why} saves review time and helps the seller re-shoot correctly. This is the problem behind reference project HSR-AIML-056 (\emph{Automated E-commerce Image Quality and Compliance Inspector}).
+
+Modern no-reference image-quality assessment (IQA) uses deep networks \cite{niqe,brisque,koniq}, but for this task the defects are low-level and well understood, so we ask a simpler question: \emph{how far do classical DIP measures go, and does a learned model on top of them beat a learned model on raw pixels?} Our contributions are:
+\begin{enumerate}
+\item A reproducible dataset generator that takes real studio product photos and injects five labelled defect types (blur, noise, low contrast, cluttered background, off-centre framing).
+\item A 10-dimensional DIP feature vector covering enhancement/contrast, filtering/noise, edge energy, thresholding, morphology and region analysis---each stage visualised.
+\item A three-way comparison on a product-disjoint split: rule baseline vs.\ Random Forest on DIP features vs.\ a small CNN on pixels, with ablations and failure analysis.
+\end{enumerate}
+
+\section{Related Work}
+Variance of the Laplacian is a standard focus measure \cite{pech2000}; Immerkaer's and median-residual estimators are standard for additive noise \cite{immerkaer}. Classical no-reference IQA such as BRISQUE \cite{brisque} and NIQE \cite{niqe} model natural-scene statistics; learned IQA such as KonIQ \cite{koniq} trains CNNs on crowd-sourced opinion scores. Otsu's method \cite{otsu} and morphological opening/closing \cite{gonzalez} are the textbook tools for separating a product from a studio background. Our work differs in that it targets \emph{marketplace compliance}---a multi-class defect decision rather than a scalar quality score---and keeps every stage interpretable.
+
+\section{Dataset}
+\label{sec:data}
+We start from the \emph{Fashion Product Images (Small)} dataset \cite{fashion}, which contains studio photographs of apparel and accessories on a white background. We keep the first 300 images whose outer 1-pixel border has mean intensity above 235 (true white-background shots), pad them to a square and resize to $256\times256$. For every base image we generate six variants (Fig.~\ref{fig:samples}):
+\begin{itemize}
+\item \textbf{clean}: unchanged;
+\item \textbf{blur}: Gaussian blur, kernel $k\in\{7,9,11,13\}$;
+\item \textbf{noise}: additive Gaussian noise $\sigma\in[15,35]$ plus 0.5--2\,\% salt-and-pepper;
+\item \textbf{low\_contrast}: $I' = aI+b$, $a\in[0.25,0.45]$, $b\in[100,140]$;
+\item \textbf{bg\_clutter}: the white background (found by thresholding at 240 and closing) is replaced by a textured, gradient or striped background;
+\item \textbf{off\_center}: the image is shrunk to 35--55\,\% and pasted into a random corner.
+\end{itemize}
+This yields $300\times6=1800$ JPEG images (quality 92) with exact labels. We split \emph{by product}: all six variants of a product go to the same fold (70\,\% train = 1260, 30\,\% test = 540, 90 per class). Thus the test products are never seen during training, which prevents the classifiers from memorising product identity.
+
+\begin{figure}[t]
+\centering\includegraphics[width=\columnwidth]{dataset_samples.png}
+\caption{Two base products and their six variants.}
+\label{fig:samples}
+\end{figure}
+
+\section{Method}
+\begin{figure*}[t]
+\centering\includegraphics[width=0.95\textwidth]{block_diagram.png}
+\caption{Processing pipeline. Orange blocks are classical DIP stages; the green block is the decision stage that is compared in three forms.}
+\label{fig:block}
+\end{figure*}
+
+Fig.~\ref{fig:block} shows the pipeline. Every image is converted to grey $g$; the ten features below are computed; a decision stage maps them to one of six classes. The binary PASS/FAIL verdict is \emph{clean} vs.\ any defect.
+
+\subsection{DIP feature extraction}
+\label{sec:feat}
+\textbf{Sharpness (edge energy).} $f_1 = \operatorname{Var}(\nabla^2 g)$, the variance of the $3\times3$ Laplacian response \cite{pech2000}. Blur removes high frequencies, so $f_1$ collapses (train-split median 243 for clean vs.\ 5.9 for blur).
+
+\textbf{Noise.} $f_2 = 1.4826\cdot\operatorname{MAD}(g - \operatorname{med}_3(g))$, the robust standard deviation of the residual after a $3\times3$ median filter. The median filter removes impulsive and Gaussian noise but keeps edges, so the residual is nearly pure noise. $f_3$ is the fraction of pixels at 0 or 255 that differ from their median by more than 100 (salt-and-pepper fraction).
+
+\textbf{Contrast (histogram).} $f_4=\sigma(g)$ and $f_5 = P_{99}(g)-P_{1}(g)$, the 1--99 percentile spread of the grey-level histogram. Fig.~\ref{fig:hist} shows that the low-contrast variant compresses the histogram to roughly a third of its width.
+
+\textbf{Background.} $f_6$ is the fraction of pixels in an 8-pixel border frame brighter than 235 (border whiteness, the marketplace ``white background'' rule).
+
+\textbf{Segmentation and morphology.} A foreground mask $m$ is obtained by inverse Otsu thresholding \cite{otsu}, followed by a $5\times5$ morphological opening (removes speckle) and closing (fills holes), then keeping the largest connected component. $f_7=\sigma(g\,|\,m=0)$ measures background non-uniformity.
+
+\textbf{Region analysis.} From the bounding box of $m$: $f_8$ = box area as a fraction of the frame, $f_9$ = distance of the box centre from the image centre (normalised), $f_{10}$ = foreground fill ratio. These encode the framing rules (``product centred and filling the frame''). Fig.~\ref{fig:stages} shows every intermediate image for the six variants of one product; Fig.~\ref{fig:box} shows how four features separate the classes.
+
+\begin{figure}[t]
+\centering\includegraphics[width=\columnwidth]{intermediate_stages.png}
+\caption{Intermediate DIP outputs for the six variants of one test product: grey image, Laplacian magnitude, Canny edges, Otsu+morphology mask, bounding box.}
+\label{fig:stages}
+\end{figure}
+
+\begin{figure}[t]
+\centering\includegraphics[width=0.8\columnwidth]{histograms.png}
+\caption{Grey-level histograms (log scale) of the clean, low-contrast and noisy variants of the same product.}
+\label{fig:hist}
+\end{figure}
+
+\begin{figure}[t]
+\centering\includegraphics[width=\columnwidth]{feature_boxplots.png}
+\caption{Distribution of four features per class (whole dataset). Sharpness is on a log axis.}
+\label{fig:box}
+\end{figure}
+
+\subsection{Baseline: hand-tuned rules}
+Thresholds were chosen from the 5th/95th percentiles of the \emph{training} split and applied in a fixed order:
+noise if $f_2>3$; low contrast if $f_5<100$; cluttered background if $f_6<0.3$; off-centre if $f_8<0.12$ and $f_9>0.25$; blur if $f_1<30$; otherwise clean. The order matters because noise inflates $f_1$ and a cluttered background lowers $f_6$ in the same way low contrast does.
+
+\subsection{Improved: Random Forest on DIP features}
+A Random Forest (300 trees, scikit-learn defaults) is trained on the same 10-D vector. It learns feature \emph{interactions} and product-dependent thresholds that single global cut-offs cannot express, and gives feature importances for interpretation.
+
+\subsection{Learned alternative: small CNN on pixels}
+To check whether hand-designed features are worth it, we train a 4-block CNN (Conv-BN-ReLU-MaxPool, 16/32/64/64 channels, $96\times96$ RGB input, 2304-128-6 head, dropout 0.3) with Adam ($10^{-3}$), batch 64, 20 epochs, random horizontal flips. Training takes 65\,s on two CPU cores.
+
+\section{Experiments and Results}
+\begin{table}[t]
+\centering
+\caption{Test set (540 images, 90 per class, product-disjoint). FRR = false reject rate on clean images; defect recall = fraction of defective images flagged.}
+\label{tab:main}
+\begin{tabular}{lcccc}
+\toprule
+Model & Acc. & Macro-F1 & Defect rec. & FRR \\
+\midrule
+Rule baseline (DIP) & 0.913 & 0.915 & 0.991 & 0.111 \\
+Random Forest (DIP) & \textbf{0.983} & \textbf{0.983} & \textbf{0.993} & \textbf{0.033} \\
+Small CNN (pixels) & 0.926 & 0.921 & 0.960 & 0.033 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Per-class F1 on the test set.}
+\label{tab:perclass}
+\begin{tabular}{lcccccc}
+\toprule
+Model & clean & blur & noise & low\_c & bg\_cl & off\_c \\
+\midrule
+Rules & 0.92 & 0.95 & 1.00 & 0.83 & 0.97 & 0.82 \\
+RF    & 0.97 & 0.99 & 1.00 & 0.96 & 0.99 & 0.99 \\
+CNN   & 0.89 & 0.97 & 0.77 & 0.97 & 0.93 & 0.99 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.49\columnwidth]{cm_rule.png}\hfill
+\includegraphics[width=0.49\columnwidth]{cm_rf.png}
+\caption{Confusion matrices: rule baseline (left) and Random Forest (right).}
+\label{fig:cm}
+\end{figure}
+
+Table~\ref{tab:main} and Fig.~\ref{fig:cm} give the main comparison. The rule baseline already catches 99\,\% of defects but rejects 11\,\% of clean images, mostly because a single global sharpness threshold cannot cope with products that are intrinsically smooth (plain T-shirts, leather bags), and because dark, low-texture products shrink the Otsu mask and trigger the off-centre rule (Table~\ref{tab:perclass}). The Random Forest on the \emph{same} features removes most of these errors: macro-F1 rises from 0.915 to 0.983 and the false-reject rate drops to 3.3\,\%. The CNN on raw pixels, with no DIP prior, is worse than the RF (0.921) and in particular confuses noisy images with clean ones (noise F1 0.77); $96\times96$ down-sampling averages the noise away, which is exactly what the median-residual feature is designed not to do.
+
+\textbf{Feature importance.} RF importances (Fig.~\ref{fig:imp}) rank sharpness (0.31), border whiteness (0.19), centroid offset (0.10) and histogram spread (0.08) highest---one feature from each DIP stage.
+
+\begin{figure}[t]
+\centering\includegraphics[width=0.8\columnwidth]{rf_importance.png}
+\caption{Random-Forest feature importances.}
+\label{fig:imp}
+\end{figure}
+
+\textbf{Ablation.} Table~\ref{tab:abl} adds feature groups cumulatively. Sharpness alone gives 0.73; adding noise and contrast features 0.94; adding background features 0.95; adding the region features from the segmentation stage 0.98. The segmentation stage is therefore necessary: without it, off-centre and cluttered-background images are not separable from clean ones. Removing the morphological opening/closing and largest-component step from the mask changed macro-F1 by $+0.004$, i.e.\ no measurable effect on this data: the studio backgrounds are nearly noise-free after JPEG compression, so Otsu alone already gives a clean mask. We keep the morphology for robustness to real uploads but report the result honestly.
+
+\begin{table}[t]
+\centering
+\caption{Feature-group ablation (Random Forest, macro-F1).}
+\label{tab:abl}
+\begin{tabular}{lcc}
+\toprule
+Feature set & \#feat & Macro-F1 \\
+\midrule
+sharpness only & 1 & 0.731 \\
++ noise, S\&P, contrast, hist.\ spread & 5 & 0.941 \\
++ border whiteness, bg std & 7 & 0.952 \\
++ bbox area, centroid offset, fill (all) & 10 & \textbf{0.983} \\
+all 10, mask without morphology/largest-CC & 10 & 0.987 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Cost.} Feature extraction takes 2.4\,ms per $256\times256$ image on a CPU and RF training 0.5\,s; the CNN needs 65\,s to train and $\sim$3\,ms per inference. The DIP+RF route is both more accurate and cheaper here.
+
+\subsection{Failure analysis}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{failure_cases_rule.png}\\[2pt]
+\includegraphics[width=\columnwidth]{failure_cases_rf.png}
+\caption{Misclassified test images (T = true, P = predicted). Top: rule baseline. Bottom: Random Forest.}
+\label{fig:fail}
+\end{figure}
+Fig.~\ref{fig:fail} shows representative errors. Three patterns recur. (i)~\emph{Smooth products}: a plain, uniformly coloured garment has little texture, so its Laplacian variance is as low as a blurred textured product; the rules call it blurred and even the RF errs on the smoothest ones. A product-adaptive sharpness measure (ratio of Laplacian energy before and after re-blurring) would address this. (ii)~\emph{Dark products on light-grey low-contrast images}: after the contrast compression the grey-level histogram still spans $>100$ levels for very dark items, so the rule misses them; the RF recovers them through the border-whiteness feature ($f_6\approx0$ because the background became grey). (iii)~\emph{Small products that are legitimately centred} (jewellery, watches) have small bounding boxes and are occasionally called off-centre; the centroid offset condition reduces but does not eliminate this. The CNN's distinctive failure is noise vs.\ clean, discussed above.
+
+\section{Conclusion}
+A ten-feature classical DIP pipeline---Laplacian sharpness, median-residual noise, histogram spread, border whiteness, Otsu+morphology segmentation and region statistics---combined with a Random Forest reaches 98.3\,\% accuracy on six-class e-commerce image compliance, beating both hand-tuned rules (91.3\,\%) and a pixel-level CNN (92.6\,\%) at a fraction of the cost. The ablation shows that each DIP stage contributes, with the segmentation/region stage essential for the framing rules. Limitations are that defects are synthetic and single-type per image; future work should test on real rejected uploads, multi-label defects and compare against BRISQUE/NIQE scores.
+
+\section*{Reproducibility}
+Code (\texttt{src/make\_dataset.py}, \texttt{dip\_features.py}, \texttt{train\_eval.py}, \texttt{ablation\_and\_diagram.py}), the generated dataset and all figures are in the submitted project folder. \texttt{python src/make\_dataset.py \&\& python src/train\_eval.py} regenerates every number in this paper (seed 0).
+
+\begin{thebibliography}{9}
+\bibitem{pech2000} J. L. Pech-Pacheco, G. Cristóbal, J. Chamorro-Martínez, and J. Fernández-Valdivia, ``Diatom autofocusing in brightfield microscopy: a comparative study,'' in \emph{Proc. ICPR}, 2000, pp. 314--317.
+\bibitem{immerkaer} J. Immerkær, ``Fast noise variance estimation,'' \emph{Computer Vision and Image Understanding}, vol. 64, no. 2, pp. 300--302, 1996.
+\bibitem{brisque} A. Mittal, A. K. Moorthy, and A. C. Bovik, ``No-reference image quality assessment in the spatial domain,'' \emph{IEEE Trans. Image Process.}, vol. 21, no. 12, pp. 4695--4708, 2012.
+\bibitem{niqe} A. Mittal, R. Soundararajan, and A. C. Bovik, ``Making a `completely blind' image quality analyzer,'' \emph{IEEE Signal Process. Lett.}, vol. 20, no. 3, pp. 209--212, 2013.
+\bibitem{koniq} V. Hosu, H. Lin, T. Sziranyi, and D. Saupe, ``KonIQ-10k: An ecologically valid database for deep learning of blind image quality assessment,'' \emph{IEEE Trans. Image Process.}, vol. 29, pp. 4041--4056, 2020.
+\bibitem{otsu} N. Otsu, ``A threshold selection method from gray-level histograms,'' \emph{IEEE Trans. Syst., Man, Cybern.}, vol. 9, no. 1, pp. 62--66, 1979.
+\bibitem{gonzalez} R. C. Gonzalez and R. E. Woods, \emph{Digital Image Processing}, 4th ed. Pearson, 2018.
+\bibitem{fashion} P. Aggarwal, ``Fashion Product Images (Small),'' Kaggle dataset, 2019; mirrored as \texttt{ashraq/fashion-product-images-small} on Hugging Face.
+\bibitem{breiman} L. Breiman, ``Random forests,'' \emph{Machine Learning}, vol. 45, pp. 5--32, 2001.
+\end{thebibliography}
+\end{document}

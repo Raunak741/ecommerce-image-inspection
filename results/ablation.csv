@@ -1,0 +1,6 @@
+feature set,n_feat,macro_F1
+sharpness only,1,0.7312
+global stats (sharp+noise+contrast),5,0.9407
++ background (border/bg_std),7,0.9523
+all 10 (+ region features),10,0.9833
+"all 10, mask WITHOUT morphology/largest-CC",10,0.987
